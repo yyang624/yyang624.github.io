@@ -28,7 +28,7 @@ const L              = 2.0;
 const DIAMETER       = 0.02;
 const STIFFNESS      = 2000.0;
 const V0             = 0.5;
-const V_COLOR_MAX    = 1.4;   // speeds >= this saturate to the hottest colour
+const V_COLOR_MAX    = 1.2;   // speeds >= this saturate to the hottest colour
 
 // 10-stop thermal palette sampled from the reference weather chart.
 // Indexed cold (t=0) -> hot (t=1).
@@ -357,7 +357,7 @@ ${paletteWGSL()}
     let p    = particles[ii];
     // Visual radius slightly larger than collision radius so the palette is
     // legible at this N.
-    let size = ${(DIAMETER * 0.3).toFixed(5)};
+    let size = ${(DIAMETER * 0.2).toFixed(5)};
     let t    = clamp(length(p.vel) / ${V_COLOR_MAX}, 0.0, 1.0);
     var out: VSOut;
     out.pos   = vec4<f32>(p.pos + c * size, 0.0, 1.0);
@@ -410,7 +410,7 @@ const readbackBuffer = device.createBuffer({
 });
 let readbackInFlight = false;
 
-const NUM_BINS = 32;
+const NUM_BINS = 64;
 const V_MAX    = 1.4;
 let histCounts = new Float32Array(NUM_BINS);
 let kToverM    = 0.5 * V0 * V0;
@@ -443,7 +443,7 @@ function processReadback(data) {
     const b  = Math.min(Math.floor(v / binW), NUM_BINS - 1);
     counts[b] += 1;
   }
-  const alpha = 0.25;
+  const alpha = 0.4;
   for (let i = 0; i < NUM_BINS; i++) {
     histCounts[i] = (1 - alpha) * histCounts[i] + alpha * counts[i];
   }
@@ -475,7 +475,7 @@ function drawHistogram() {
     const vCenter = (i + 0.5) * binW;
     histCtx.fillStyle = paletteJS(vCenter / V_COLOR_MAX);
     const x  = padL + (i / NUM_BINS) * plotW;
-    const bw = plotW / NUM_BINS - 1;
+    const bw = plotW / NUM_BINS - 0.5;
     const bh = (density[i] / yMax) * plotH;
     histCtx.fillRect(x, padT + plotH - bh, bw, bh);
   }
@@ -596,7 +596,9 @@ function loop() {
   recordRender(encoder);
   device.queue.submit([encoder.finish()]);
 
-  if (frameIdx % 10 === 0) startReadback();
+  // Kick a readback every frame; the in-flight guard naturally
+  // rate-limits to the GPU round-trip (~30 Hz in practice).
+  startReadback();
   drawHistogram();
 
   frameIdx++;

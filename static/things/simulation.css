@@ -1,15 +1,23 @@
 .sim-container {
   margin: 1.5rem 0;
 }
-#sim-canvas {
+#sim-canvas,
+#hist-canvas {
+  box-sizing: border-box;
   width: 100%;
   max-width: 720px;
+  display: block;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+#sim-canvas {
   aspect-ratio: 4 / 3;
   height: auto;
-  display: block;
-  background: #000;
-  border-radius: 4px;
-  border: 1px solid #ddd;
+  background: #080a14;
+}
+#hist-canvas {
+  height: 220px;
+  background: #0b0d14;
 }
 .sim-controls {
   margin-top: 0.6rem;
@@ -67,13 +75,4 @@
 
 .sim-histogram {
   margin-top: 1rem;
-  max-width: 720px;
-}
-#hist-canvas {
-  width: 100%;
-  height: 220px;
-  display: block;
-  background: #fcfcfc;
-  border: 1px solid #ddd;
-  border-radius: 4px;
 }
