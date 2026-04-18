@@ -1,0 +1,12 @@
+{{ define "main" }}
+<h1>{{ .Title }}</h1>
+{{ .Content }}
+<ul class="sim-list">
+  {{ range .Pages.ByDate.Reverse }}
+    <li>
+      <a href="{{ .Permalink }}"><strong>{{ .Title }}</strong></a>
+      {{ with .Params.summary }}<p>{{ . }}</p>{{ end }}
+    </li>
+  {{ end }}
+</ul>
+{{ end }}

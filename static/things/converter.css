@@ -1,0 +1,28 @@
+.converter {
+  margin: 1.2rem 0;
+}
+.converter-table {
+  border-collapse: collapse;
+}
+.converter-table td {
+  border: none;
+  padding: 0.35rem 0.8rem 0.35rem 0;
+  font-family: var(--sans, sans-serif);
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+.converter input[type="text"] {
+  width: 9rem;
+  padding: 0.3rem 0.5rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  background: #fff;
+}
+.converter input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent, #a00);
+  box-shadow: 0 0 0 2px rgba(170, 0, 0, 0.1);
+}

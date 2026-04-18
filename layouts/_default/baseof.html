@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .Title }} — {{ .Site.Title }}</title>
+  <link rel="stylesheet" href="{{ "css/style.css" | relURL }}">
+  {{ partial "katex.html" . }}
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="{{ .Site.BaseURL }}" class="brand">{{ .Site.Params.name }}</a>
+      <ul>
+        {{ range .Site.Menus.main }}
+          <li><a href="{{ .URL | relURL }}">{{ .Name }}</a></li>
+        {{ end }}
+      </ul>
+    </nav>
+  </header>
+  <main>{{ block "main" . }}{{ end }}</main>
+  <footer>
+    © {{ now.Year }} {{ .Site.Params.name }} ·
+    <a href="https://orcid.org/{{ .Site.Params.orcid }}">ORCID</a> ·
+    <a href="https://scholar.google.com/citations?user={{ .Site.Params.googleScholar }}">Google Scholar</a> ·
+    <a href="https://github.com/{{ .Site.Params.github }}">GitHub</a>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,43 @@
+baseURL = "https://yyang624.github.io/"
+languageCode = "en-us"
+title = "Yang Yang"
+enableRobotsTXT = true
+
+[params]
+  name          = "Yang Yang"
+  role          = "Condensed Matter Theorist"
+  affiliation   = ""
+  email         = "rexyang624@gmail.com"
+  orcid         = "0000-0001-6375-2005"
+  googleScholar = "81n7-PoAAAAJ&hl=en"
+  arxiv         = "yang_y_19"
+  github        = "yyang624"
+  math          = true
+
+[menu]
+  [[menu.main]]
+    name = "Home"
+    url  = "/"
+    weight = 1
+  [[menu.main]]
+    name = "Posts"
+    url  = "/posts/"
+    weight = 2
+  [[menu.main]]
+    name = "Things"
+    url  = "/things/"
+    weight = 3
+  [[menu.main]]
+    name = "Publications"
+    url  = "/publications/"
+    weight = 4
+
+[markup.goldmark.renderer]
+  unsafe = true
+
+[markup.goldmark.extensions.passthrough]
+  enable = true
+
+  [markup.goldmark.extensions.passthrough.delimiters]
+    block  = [['\[', '\]'], ['$$', '$$']]
+    inline = [['\(', '\)'], ['$', '$']]

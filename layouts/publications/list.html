@@ -1,0 +1,56 @@
+{{ define "main" }}
+<h1>Publications</h1>
+<p>See also:
+  <a href="https://arxiv.org/a/{{ .Site.Params.arxiv }}">arXiv</a>,
+  <a href="https://scholar.google.com/citations?user={{ .Site.Params.googleScholar }}">Google Scholar</a>.
+</p>
+
+{{ $preprints := where .Pages "Params.preprint" true }}
+{{ $published := where .Pages "Params.preprint" "!=" true }}
+
+{{ with $preprints }}
+<h2>Preprints</h2>
+<ol class="pubs" reversed>
+  {{ range .ByDate.Reverse }}
+    <li>
+      <div class="pub-title"><a href="{{ .Permalink }}">{{ .Title }}</a></div>
+      <div class="pub-authors">{{ delimit .Params.authors ", " }}</div>
+      <div class="pub-venue">
+        {{ with .Params.arxiv }}<em>arXiv:{{ . }}</em>{{ end }}
+        ({{ .Date.Format "2006" }}).
+        {{ with .Params.status }}<span class="pub-status">{{ . }}</span>{{ end }}
+      </div>
+      <div class="pub-links">
+        {{ with .Params.arxiv }}<a href="https://arxiv.org/abs/{{ . }}">arXiv</a>{{ end }}
+        {{ with .Params.pdf }} · <a href="{{ . }}">PDF</a>{{ end }}
+        {{ with .Params.code }} · <a href="{{ . }}">Code</a>{{ end }}
+      </div>
+    </li>
+  {{ end }}
+</ol>
+{{ end }}
+
+{{ with $published }}
+<h2>Published</h2>
+<ol class="pubs" reversed>
+  {{ range .ByDate.Reverse }}
+    <li>
+      <div class="pub-title"><a href="{{ .Permalink }}">{{ .Title }}</a></div>
+      <div class="pub-authors">{{ delimit .Params.authors ", " }}</div>
+      <div class="pub-venue">
+        <em>{{ .Params.journal }}</em>
+        {{ with .Params.volume }} <strong>{{ . }}</strong>{{ end }}
+        {{ with .Params.pages }}, {{ . }}{{ end }}
+        ({{ .Params.year }}).
+      </div>
+      <div class="pub-links">
+        {{ with .Params.doi }}<a href="https://doi.org/{{ . }}">DOI</a>{{ end }}
+        {{ with .Params.arxiv }} · <a href="https://arxiv.org/abs/{{ . }}">arXiv</a>{{ end }}
+        {{ with .Params.pdf }} · <a href="{{ . }}">PDF</a>{{ end }}
+        {{ with .Params.code }} · <a href="{{ . }}">Code</a>{{ end }}
+      </div>
+    </li>
+  {{ end }}
+</ol>
+{{ end }}
+{{ end }}

@@ -1,0 +1,19 @@
+{{ define "main" }}
+<section class="intro">
+  <h1>{{ .Site.Params.name }}</h1>
+  <p class="role">{{ .Site.Params.role }}</p>
+  {{ .Content }}
+</section>
+<section class="highlights">
+  <h2>Recent publications</h2>
+  <ul>
+    {{ range first 5 (where .Site.RegularPages "Section" "publications").ByDate.Reverse }}
+      <li>
+        <a href="{{ .Permalink }}">{{ .Title }}</a>,
+        <em>{{ .Params.journal }}</em> ({{ .Date.Format "2006" }}).
+      </li>
+    {{ end }}
+  </ul>
+  <a href="/publications/">All publications →</a>
+</section>
+{{ end }}
