@@ -44,11 +44,11 @@
   color: var(--muted, #666);
 }
 .sim-speed input[type="range"] {
-  width: 110px;
+  width: 160px;
   vertical-align: middle;
 }
 .sim-speed span {
-  min-width: 1.8rem;
+  min-width: 2.6rem;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }

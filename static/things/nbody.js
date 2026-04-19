@@ -11,6 +11,13 @@
 //     a_{n+1}   = F(x_{n+1}) / m       (direct O(N^2) summation)
 //     v_{n+1}   = v_{n+1/2} + (dt/2) * a_{n+1}
 //
+// The "Speed" slider controls how many integrator steps are run between
+// rendered frames. dt is fixed at DT_BASE — this keeps the integrator
+// stable regardless of the user's playback speed. "10x" means 10 dt of
+// simulated time are advanced per displayed frame. Negative values run
+// time backward; velocity Verlet is time-reversible, so this traces the
+// trajectory back through round-off.
+//
 // Soft-sphere repulsion U(r) = (1/2) k (d - r)^2 for r < d; reflecting walls.
 // Initial conditions: all particles at speed V0 with random direction, so
 // the initial speed PDF is f_0(v) = delta(v - V0). Elastic collisions drive
@@ -23,12 +30,12 @@
 
 const N              = 4096;
 const WORKGROUP_SIZE = 64;
-const DT_BASE        = 0.0002;
+const DT_BASE        = 0.0005;
 const L              = 2.0;
-const DIAMETER       = 0.02;
-const STIFFNESS      = 2000.0;
-const V0             = 0.5;
-const V_COLOR_MAX    = 1.2;   // speeds >= this saturate to the hottest colour
+const DIAMETER       = 0.005;
+const STIFFNESS      = 4000.0;
+const V0             = 1.0;
+const V_COLOR_MAX    = 2.6;   // speeds >= this saturate to the hottest colour
 
 // 10-stop thermal palette sampled from the reference weather chart.
 // Indexed cold (t=0) -> hot (t=1).
@@ -155,10 +162,17 @@ const paramsBuffer = device.createBuffer({
   size: 16,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
-let speed = parseFloat(speedSlider.value);
+
+// Slider state. `speed` is the signed slider value; `substeps` is the
+// number of VV steps to run per rendered frame (|speed|); `dt` is DT_BASE
+// with the sign of speed, so negative speed runs VV backward in time.
+let speed    = parseFloat(speedSlider.value);
+let substeps = Math.max(1, Math.abs(Math.round(speed)));
+let dtSigned = Math.sign(speed || 1) * DT_BASE;
+
 function writeParams() {
   device.queue.writeBuffer(paramsBuffer, 0,
-    new Float32Array([DT_BASE * speed, DIAMETER, STIFFNESS, L * 0.5]));
+    new Float32Array([dtSigned, DIAMETER, STIFFNESS, L * 0.5]));
 }
 writeParams();
 
@@ -357,7 +371,7 @@ ${paletteWGSL()}
     let p    = particles[ii];
     // Visual radius slightly larger than collision radius so the palette is
     // legible at this N.
-    let size = ${(DIAMETER * 0.2).toFixed(5)};
+    let size = ${(DIAMETER * 1.0).toFixed(5)};
     let t    = clamp(length(p.vel) / ${V_COLOR_MAX}, 0.0, 1.0);
     var out: VSOut;
     out.pos   = vec4<f32>(p.pos + c * size, 0.0, 1.0);
@@ -410,8 +424,8 @@ const readbackBuffer = device.createBuffer({
 });
 let readbackInFlight = false;
 
-const NUM_BINS = 64;
-const V_MAX    = 1.4;
+const NUM_BINS = 32;
+const V_MAX    = 2.8;
 let histCounts = new Float32Array(NUM_BINS);
 let kToverM    = 0.5 * V0 * V0;
 
@@ -439,9 +453,11 @@ function processReadback(data) {
     const vy = data[i * 4 + 3];
     const v2 = vx * vx + vy * vy;
     v2sum += v2;
-    const v  = Math.sqrt(v2);
-    const b  = Math.min(Math.floor(v / binW), NUM_BINS - 1);
-    counts[b] += 1;
+    const v = Math.sqrt(v2);
+    const b = Math.floor(v / binW);
+    // Drop particles above the plot range rather than clamping them
+    // into the last bin (which would spuriously inflate the tail).
+    if (b < NUM_BINS) counts[b] += 1;
   }
   const alpha = 0.4;
   for (let i = 0; i < NUM_BINS; i++) {
@@ -592,7 +608,9 @@ function loop() {
   }
 
   const encoder = device.createCommandEncoder();
-  if (!paused) recordVVStep(encoder);
+  if (!paused) {
+    for (let s = 0; s < substeps; s++) recordVVStep(encoder);
+  }
   recordRender(encoder);
   device.queue.submit([encoder.finish()]);
 
@@ -620,6 +638,11 @@ resetBtn.addEventListener('click', () => {
 });
 speedSlider.addEventListener('input', () => {
   speed = parseFloat(speedSlider.value);
-  speedLabel.textContent = `${speed.toFixed(2)}×`;
+  // Integer substeps; 0 means no stepping (soft pause).
+  substeps = Math.abs(Math.round(speed));
+  // Signed dt for time reversal. Keep previous sign if speed is exactly 0
+  // so that the integrator parameter is well-defined when stopped.
+  if (speed !== 0) dtSigned = Math.sign(speed) * DT_BASE;
+  speedLabel.textContent = `${Math.round(speed)}×`;
   writeParams();
 });
