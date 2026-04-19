@@ -1,5 +1,4 @@
 // Energy-unit converter. Canonical unit: meV.
-// Conversion factors from CODATA 2019 defined values of h, c, k_B.
 (function () {
   'use strict';
 

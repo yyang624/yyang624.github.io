@@ -13,10 +13,11 @@ Type in any field to update the rest.
     <tr>
       <td><input data-unit="meV" type="text" value="23.5382" inputmode="decimal"> meV</td>
       <td><input data-unit="K"   type="text" value="273.15" inputmode="decimal"> K</td>
+    <tr>
       <td><input data-unit="Ry"  type="text" value="0.00173003" inputmode="decimal"> Ry</td>
+      <td><input data-unit="cm"  type="text" value="189.849" inputmode="decimal"> cm$^{-1}$</td>
     </tr>
     <tr>
-      <td><input data-unit="cm"  type="text" value="189.849" inputmode="decimal"> cm$^{-1}$</td>
       <td><input data-unit="nm"  type="text" value="52673.5" inputmode="decimal"> nm</td>
       <td><input data-unit="THz" type="text" value="5.69152" inputmode="decimal"> THz</td>
     </tr>
