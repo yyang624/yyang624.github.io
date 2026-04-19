@@ -1,5 +1,5 @@
 ---
-title: 'Coarsening dynamics of Ising-nematic order in a frustrated Heisenberg antiferromagnet'
+title: 'Gapless dispersive continuum in a modulated quantum kagome antiferromagnet'
 date: 2025-04-26
 authors: ["Asiri Thennakoon", "Ryouga Yokokura", "Yang Yang", "Ryoichi Kajimoto", "Mitsutaka Nakamura", "Masahiro Hayashi", "Chishiro Michioka", "Gia-Wei Chern", "Collin Broholm", "Hiroaki Ueda", "Seung-Hun Lee"]
 journal: "Nature Communications"
