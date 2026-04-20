@@ -1,0 +1,19 @@
+.theorem-box {
+  border: 1.5px solid #1b5e20;
+  border-radius: 8px;
+  margin: 1.2em 0;
+  overflow: hidden;
+  font-family: "Latin Modern Roman", "Computer Modern", Georgia, serif;
+}
+.theorem-head {
+  background: #1b5e20;
+  color: #fff;
+  font-weight: bold;
+  padding: 0.5em 1em;
+}
+.theorem-body {
+  background: #f1f8e9;
+  padding: 0.8em 1em;
+  color: #1a1a1a;
+}
+.theorem-body p:last-child { margin-bottom: 0; }

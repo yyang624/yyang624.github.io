@@ -1,0 +1,11 @@
+{{ $name   := .Get "name"   | default "" }}
+{{ $number := .Get "number" | default "" }}
+{{ $title  := .Get "title"  | default "" }}
+<div class="theorem-box">
+  <div class="theorem-head">
+    {{ $name }}{{ with $number }} {{ . }}{{ end }}{{ with $title }}: {{ . }}{{ end }}
+  </div>
+  <div class="theorem-body">
+    {{ .Inner | markdownify }}
+  </div>
+</div>
