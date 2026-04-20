@@ -1,27 +1,31 @@
-// Ideal gas in a 2D box, integrated with velocity Verlet on the GPU.
+// Ideal gas in a 2D box with hard-sphere elastic collisions, on the GPU.
 //
-// Integrator (two compute passes per step, holding a persistent acceleration
-// buffer between steps):
+// Integrator (two compute passes per step; no forces, no persistent state):
 //
-//   Pass 1  (kick-drift):
-//     v_{n+1/2} = v_n     + (dt/2) * a_n
-//     x_{n+1}   = x_n     +  dt    * v_{n+1/2}
+//   Pass 1  (drift + reflecting walls):
+//     x_{n+1} = x_n + v_n * dt
+//     mirror position and flip normal velocity on wall contact
 //
-//   Pass 2  (force + final-kick):
-//     a_{n+1}   = F(x_{n+1}) / m       (direct O(N^2) summation)
-//     v_{n+1}   = v_{n+1/2} + (dt/2) * a_{n+1}
+//   Pass 2  (binary elastic collisions, direct O(N^2) scan):
+//     for each j with r := |x_i - x_j| < d  and  (v_i - v_j).(x_i - x_j) < 0:
+//       v_i <- v_i - ((v_i - v_j).(x_i - x_j) / r^2) (x_i - x_j)
+//   Each GPU lane updates only its own velocity, computing the impulse
+//   symmetrically from the pre-collision state of every overlapping,
+//   approaching neighbour. No cross-lane writes; pair-wise momentum and
+//   kinetic energy are conserved exactly.
 //
 // The "Speed" slider controls how many integrator steps are run between
-// rendered frames. dt is fixed at DT_BASE — this keeps the integrator
-// stable regardless of the user's playback speed. "10x" means 10 dt of
-// simulated time are advanced per displayed frame. Negative values run
-// time backward; velocity Verlet is time-reversible, so this traces the
-// trajectory back through round-off.
+// rendered frames. dt is fixed at DT_BASE. "10x" means 10 dt of simulated
+// time are advanced per displayed frame. Negative values flip the sign
+// of dt (and of the approaching gate); time-stepped hard-sphere dynamics
+// is reversible only up to the finite-dt error in collision timing, so
+// reverse play retraces the forward trajectory approximately rather than
+// to round-off as velocity Verlet did.
 //
-// Soft-sphere repulsion U(r) = (1/2) k (d - r)^2 for r < d; reflecting walls.
-// Initial conditions: all particles at speed V0 with random direction, so
-// the initial speed PDF is f_0(v) = delta(v - V0). Elastic collisions drive
-// the system toward the 2D Maxwell-Boltzmann distribution.
+// Hard-sphere diameter d; reflecting walls. Initial conditions: all
+// particles at speed V0 with random direction, so the initial speed PDF
+// is f_0(v) = delta(v - V0). Elastic binary collisions drive the system
+// toward the 2D Maxwell-Boltzmann distribution.
 //
 // Particle colour is a piecewise-linear lookup into a thermal palette
 // (pale blue-white at v = 0, navy at ~v_mp/2, turquoise, teal, yellow,
@@ -30,10 +34,9 @@
 
 const N              = 4096;
 const WORKGROUP_SIZE = 64;
-const DT_BASE        = 0.0005;
+const DT_BASE        = 0.001;
 const L              = 2.0;
 const DIAMETER       = 0.005;
-const STIFFNESS      = 4000.0;
 const V0             = 1.0;
 const V_COLOR_MAX    = 2.6;   // speeds >= this saturate to the hottest colour
 
@@ -119,12 +122,23 @@ window.addEventListener('resize', resizeCanvas);
 // --- Initial conditions ---------------------------------------------------
 
 function initialConditions() {
-  const data = new Float32Array(N * 4);
-  const margin = DIAMETER * 1.5;
+  // Jittered square-lattice placement. With cell size l = L/M and
+  // M = ceil(sqrt(N)), a symmetric jitter of span alpha*(l - d) with
+  // alpha < 1 guarantees both pair separation > d and wall clearance
+  // > d/2, so the kernel sees no overlaps at t = 0.
+  const M      = Math.ceil(Math.sqrt(N));
+  const cell   = L / M;
+  const jitter = 0.9 * (cell - DIAMETER);
+  const data   = new Float32Array(N * 4);
   for (let i = 0; i < N; i++) {
-    data[i * 4 + 0] = (Math.random() - 0.5) * (L - 2 * margin);
-    data[i * 4 + 1] = (Math.random() - 0.5) * (L - 2 * margin);
+    const cx = i % M;
+    const cy = Math.floor(i / M);
+    const x0 = -L * 0.5 + (cx + 0.5) * cell;
+    const y0 = -L * 0.5 + (cy + 0.5) * cell;
+    data[i * 4 + 0] = x0 + (Math.random() - 0.5) * jitter;
+    data[i * 4 + 1] = y0 + (Math.random() - 0.5) * jitter;
     const theta = Math.random() * 2 * Math.PI;
+    // const theta = 1.5*Math.PI;
     data[i * 4 + 2] = V0 * Math.cos(theta);
     data[i * 4 + 3] = V0 * Math.sin(theta);
   }
@@ -132,7 +146,6 @@ function initialConditions() {
 }
 
 const particleByteSize = N * 4 * 4;      // 16 bytes/particle: pos (vec2), vel (vec2)
-const accByteSize      = N * 2 * 4;      //  8 bytes/particle: acc (vec2)
 
 const bufferA = device.createBuffer({
   size: particleByteSize,
@@ -142,8 +155,12 @@ const bufferB = device.createBuffer({
   size: particleByteSize,
   usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
 });
-const accBuffer = device.createBuffer({
-  size: accByteSize,
+
+// Partner buffer. partnerBuffer[i] = j, the global index of i's chosen
+// collision partner this substep, or -1 if no overlapping approaching
+// neighbour exists. Written by Pass 2a, read by Pass 2b.
+const partnerBuffer = device.createBuffer({
+  size: N * 4,
   usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
 });
 
@@ -151,13 +168,10 @@ function uploadInitial() {
   const data = initialConditions();
   device.queue.writeBuffer(bufferA, 0, data);
   device.queue.writeBuffer(bufferB, 0, data);
-  // Zero the acceleration buffer. Since particles don't overlap at t=0, the
-  // true initial accelerations are zero anyway.
-  device.queue.writeBuffer(accBuffer, 0, new Float32Array(N * 2));
 }
 uploadInitial();
 
-// Params uniform: [dt, diameter, stiffness, half_L].
+// Params uniform: [dt, diameter, half_L]; padded to 16 B for UBO alignment.
 const paramsBuffer = device.createBuffer({
   size: 16,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -172,7 +186,7 @@ let dtSigned = Math.sign(speed || 1) * DT_BASE;
 
 function writeParams() {
   device.queue.writeBuffer(paramsBuffer, 0,
-    new Float32Array([dtSigned, DIAMETER, STIFFNESS, L * 0.5]));
+    new Float32Array([dtSigned, DIAMETER, L * 0.5]));
 }
 writeParams();
 
@@ -180,20 +194,19 @@ writeParams();
 
 const WGSL_PARTICLE = /* wgsl */`
   struct Particle { pos: vec2<f32>, vel: vec2<f32> };
-  struct Params { dt: f32, diameter: f32, stiffness: f32, half_L: f32 };
+  struct Params { dt: f32, diameter: f32, half_L: f32 };
 `;
 
-// --- Pass 1: kick-drift ---------------------------------------------------
+// --- Pass 1: drift + reflecting walls ------------------------------------
 //
-// Reads:  src (pos, vel), acc[]
-// Writes: dst (new pos, v_half)
+// Reads:  src (pos, vel)
+// Writes: dst (new pos, wall-corrected vel)
 
 const module1 = device.createShaderModule({ code: /* wgsl */`
   ${WGSL_PARTICLE}
   @group(0) @binding(0) var<storage, read>       src: array<Particle>;
   @group(0) @binding(1) var<storage, read_write> dst: array<Particle>;
-  @group(0) @binding(2) var<storage, read>       acc: array<vec2<f32>>;
-  @group(0) @binding(3) var<uniform>             params: Params;
+  @group(0) @binding(2) var<uniform>             params: Params;
 
   @compute @workgroup_size(${WORKGROUP_SIZE})
   fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -201,129 +214,228 @@ const module1 = device.createShaderModule({ code: /* wgsl */`
     let n = arrayLength(&src);
     if (i >= n) { return; }
 
-    let p  = src[i];
-    let a  = acc[i];
-    let dt = params.dt;
-
-    var v_half = p.vel + 0.5 * a * dt;
-    var x_new  = p.pos + v_half * dt;
+    let p = src[i];
+    var vel = p.vel;
+    var pos = p.pos + vel * params.dt;
 
     // Reflecting walls: mirror position and flip the normal velocity.
     let hL = params.half_L;
-    if (x_new.x >  hL) { x_new.x =  2.0 * hL - x_new.x; v_half.x = -v_half.x; }
-    if (x_new.x < -hL) { x_new.x = -2.0 * hL - x_new.x; v_half.x = -v_half.x; }
-    if (x_new.y >  hL) { x_new.y =  2.0 * hL - x_new.y; v_half.y = -v_half.y; }
-    if (x_new.y < -hL) { x_new.y = -2.0 * hL - x_new.y; v_half.y = -v_half.y; }
+    if (pos.x >  hL) { pos.x =  2.0 * hL - pos.x; vel.x = -vel.x; }
+    if (pos.x < -hL) { pos.x = -2.0 * hL - pos.x; vel.x = -vel.x; }
+    if (pos.y >  hL) { pos.y =  2.0 * hL - pos.y; vel.y = -vel.y; }
+    if (pos.y < -hL) { pos.y = -2.0 * hL - pos.y; vel.y = -vel.y; }
 
-    dst[i].pos = x_new;
-    dst[i].vel = v_half;
+    dst[i].pos = pos;
+    dst[i].vel = vel;
   }
 `});
 
-const layout1 = device.createBindGroupLayout({
+// --- Bind-group layouts ---------------------------------------------------
+//
+// Pass 1  (drift):       src particles -> dst particles       (+ params)
+// Pass 2a (find_partner): src particles -> partnerBuffer       (+ params)
+// Pass 2b (apply):       src particles, partnerBuffer -> dst  (+ params)
+
+const driftLayout = device.createBindGroupLayout({
   entries: [
     { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-    { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-    { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
   ],
 });
+const partnerLayout = device.createBindGroupLayout({
+  entries: [
+    { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+    { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+  ],
+});
+const collideLayout = device.createBindGroupLayout({
+  entries: [
+    { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+    { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+  ],
+});
+
 const pipeline1 = device.createComputePipeline({
-  layout: device.createPipelineLayout({ bindGroupLayouts: [layout1] }),
+  layout:  device.createPipelineLayout({ bindGroupLayouts: [driftLayout] }),
   compute: { module: module1, entryPoint: 'main' },
 });
-function makeP1Bind(src, dst) {
+
+function makeDriftBind(src, dst) {
   return device.createBindGroup({
-    layout: layout1,
+    layout: driftLayout,
     entries: [
       { binding: 0, resource: { buffer: src } },
       { binding: 1, resource: { buffer: dst } },
-      { binding: 2, resource: { buffer: accBuffer } },
-      { binding: 3, resource: { buffer: paramsBuffer } },
+      { binding: 2, resource: { buffer: paramsBuffer } },
     ],
   });
 }
-const p1BindAB = makeP1Bind(bufferA, bufferB);   // src=A, dst=B
-const p1BindBA = makeP1Bind(bufferB, bufferA);   // src=B, dst=A
+const driftAB = makeDriftBind(bufferA, bufferB);
+const driftBA = makeDriftBind(bufferB, bufferA);
 
-// --- Pass 2: force computation + final kick -------------------------------
+// --- Pass 2a: find each particle's mutual-best collision partner --------
 //
-// Reads/writes state in place: reads all positions, reads own v_half, writes
-// own new velocity. Also writes the new acceleration to acc[].
+// For each particle i, scan all others (tiled through workgroup shared
+// memory) and record the index of the single most urgent overlapping,
+// approaching neighbour — the one with the most negative vn*dt. Ties are
+// broken by smallest global index. The resulting ranking is symmetric:
+// for any pair (i, j) both lanes compute the same score and the same
+// tie-break, so if (i, j) is i's best candidate among its approaches it
+// is also j's best candidate among its approaches iff they mutually
+// prefer each other.
+//
+// Reads:  src (post-drift pos, vel)
+// Writes: partners[i] = j (i32) or -1
 
-const module2 = device.createShaderModule({ code: /* wgsl */`
+const modulePartner = device.createShaderModule({ code: /* wgsl */`
   ${WGSL_PARTICLE}
-  @group(0) @binding(0) var<storage, read_write> state: array<Particle>;
-  @group(0) @binding(1) var<storage, read_write> acc:   array<vec2<f32>>;
-  @group(0) @binding(2) var<uniform>             params: Params;
+  @group(0) @binding(0) var<storage, read>       src:      array<Particle>;
+  @group(0) @binding(1) var<storage, read_write> partners: array<i32>;
+  @group(0) @binding(2) var<uniform>             params:   Params;
 
-  var<workgroup> tile: array<vec2<f32>, ${WORKGROUP_SIZE}>;
+  var<workgroup> tile: array<Particle, ${WORKGROUP_SIZE}>;
 
   @compute @workgroup_size(${WORKGROUP_SIZE})
   fn main(@builtin(global_invocation_id) gid: vec3<u32>,
           @builtin(local_invocation_id)  lid: vec3<u32>) {
     let i = gid.x;
-    let n = arrayLength(&state);
+    let n = arrayLength(&src);
 
-    // Own position (sentinel used for any out-of-range lanes so they still
-    // participate in workgroupBarrier uniformly).
     var my_pos: vec2<f32>;
-    if (i < n) { my_pos = state[i].pos; }
-    else       { my_pos = vec2<f32>(1e30, 1e30); }
+    var my_vel: vec2<f32>;
+    if (i < n) { my_pos = src[i].pos; my_vel = src[i].vel; }
+    else       { my_pos = vec2<f32>(1e30, 1e30); my_vel = vec2<f32>(0.0, 0.0); }
 
     let d  = params.diameter;
     let d2 = d * d;
-    var a_new = vec2<f32>(0.0, 0.0);
+    let dt = params.dt;
+
+    var best_j:     i32 = -1;
+    var best_score: f32 = 0.0;   // vn*dt; any approach has score < 0
 
     let tiles = (n + ${WORKGROUP_SIZE}u - 1u) / ${WORKGROUP_SIZE}u;
     for (var t: u32 = 0u; t < tiles; t = t + 1u) {
-      let j = t * ${WORKGROUP_SIZE}u + lid.x;
-      if (j < n) { tile[lid.x] = state[j].pos; }
-      else       { tile[lid.x] = vec2<f32>(1e30, 1e30); }
+      let base     = t * ${WORKGROUP_SIZE}u;
+      let load_idx = base + lid.x;
+      if (load_idx < n) { tile[lid.x] = src[load_idx]; }
+      else              { tile[lid.x] = Particle(vec2<f32>(1e30, 1e30), vec2<f32>(0.0, 0.0)); }
       workgroupBarrier();
 
       for (var k: u32 = 0u; k < ${WORKGROUP_SIZE}u; k = k + 1u) {
-        let dr = my_pos - tile[k];
+        let j = base + k;
+        if (j == i || j >= n) { continue; }
+        let dr = my_pos - tile[k].pos;
         let r2 = dot(dr, dr);
         if (r2 < d2 && r2 > 1e-12) {
-          let r = sqrt(r2);
-          let f = params.stiffness * (d - r) / r;
-          a_new = a_new + dr * f;
+          let dv    = my_vel - tile[k].vel;
+          let vn    = dot(dv, dr);
+          let score = vn * dt;
+          if (score < best_score) {
+            best_score = score;
+            best_j     = i32(j);
+          } else if (score == best_score && i32(j) < best_j) {
+            best_j = i32(j);
+          }
         }
       }
       workgroupBarrier();
     }
 
-    if (i >= n) { return; }
-    let v_half = state[i].vel;
-    state[i].vel = v_half + 0.5 * a_new * params.dt;
-    acc[i] = a_new;
+    if (i < n) { partners[i] = best_j; }
   }
 `});
 
-const layout2 = device.createBindGroupLayout({
-  entries: [
-    { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-    { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-    { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-  ],
+const pipelinePartner = device.createComputePipeline({
+  layout:  device.createPipelineLayout({ bindGroupLayouts: [partnerLayout] }),
+  compute: { module: modulePartner, entryPoint: 'main' },
 });
-const pipeline2 = device.createComputePipeline({
-  layout: device.createPipelineLayout({ bindGroupLayouts: [layout2] }),
-  compute: { module: module2, entryPoint: 'main' },
-});
-function makeP2Bind(state) {
+
+function makePartnerBind(src) {
   return device.createBindGroup({
-    layout: layout2,
+    layout: partnerLayout,
     entries: [
-      { binding: 0, resource: { buffer: state } },
-      { binding: 1, resource: { buffer: accBuffer } },
+      { binding: 0, resource: { buffer: src } },
+      { binding: 1, resource: { buffer: partnerBuffer } },
       { binding: 2, resource: { buffer: paramsBuffer } },
     ],
   });
 }
-const p2BindA = makeP2Bind(bufferA);
-const p2BindB = makeP2Bind(bufferB);
+const partnerBindA = makePartnerBind(bufferA);
+const partnerBindB = makePartnerBind(bufferB);
+
+// --- Pass 2b: apply elastic impulse for mutual-best pairs ----------------
+//
+// For each particle i, read j = partners[i]. Fire the equal-mass elastic
+// impulse only if partners[j] == i. Because the impulse rule is symmetric
+// and both lanes compute J from the same pre-collision src state, the two
+// sides of every fired pair apply exactly opposite impulses. Pairwise
+// momentum and kinetic energy are conserved to machine precision; there
+// is no sum-of-impulses cross term, so clusters of simultaneous overlaps
+// no longer leak energy.
+//
+// Non-mutual overlaps are deferred: the `vn*dt < 0` gate persists while
+// the pair is still approaching, so they will be resolved on a subsequent
+// substep (typically the very next one).
+
+const module2 = device.createShaderModule({ code: /* wgsl */`
+  ${WGSL_PARTICLE}
+  @group(0) @binding(0) var<storage, read>       src:      array<Particle>;
+  @group(0) @binding(1) var<storage, read_write> dst:      array<Particle>;
+  @group(0) @binding(2) var<uniform>             params:   Params;
+  @group(0) @binding(3) var<storage, read>       partners: array<i32>;
+
+  @compute @workgroup_size(${WORKGROUP_SIZE})
+  fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = arrayLength(&src);
+    if (i >= n) { return; }
+
+    let my  = src[i];
+    var vel = my.vel;
+
+    let j_signed = partners[i];
+    if (j_signed >= 0) {
+      let j = u32(j_signed);
+      // Mutual-best gate: fire only if j also chose i.
+      if (partners[j] == i32(i)) {
+        let other = src[j];
+        let dr = my.pos - other.pos;
+        let r2 = dot(dr, dr);
+        if (r2 > 1e-12) {
+          let dv = my.vel - other.vel;
+          let vn = dot(dv, dr);
+          vel = my.vel - (vn / r2) * dr;
+        }
+      }
+    }
+
+    dst[i].pos = my.pos;
+    dst[i].vel = vel;
+  }
+`});
+
+const pipeline2 = device.createComputePipeline({
+  layout:  device.createPipelineLayout({ bindGroupLayouts: [collideLayout] }),
+  compute: { module: module2, entryPoint: 'main' },
+});
+
+function makeCollideBind(src, dst) {
+  return device.createBindGroup({
+    layout: collideLayout,
+    entries: [
+      { binding: 0, resource: { buffer: src } },
+      { binding: 1, resource: { buffer: dst } },
+      { binding: 2, resource: { buffer: paramsBuffer } },
+      { binding: 3, resource: { buffer: partnerBuffer } },
+    ],
+  });
+}
+const collideAB = makeCollideBind(bufferA, bufferB);
+const collideBA = makeCollideBind(bufferB, bufferA);
 
 // --- Render pipeline ------------------------------------------------------
 //
@@ -424,8 +536,8 @@ const readbackBuffer = device.createBuffer({
 });
 let readbackInFlight = false;
 
-const NUM_BINS = 32;
-const V_MAX    = 2.8;
+const NUM_BINS = 64;
+const V_MAX    = 2.6;
 let histCounts = new Float32Array(NUM_BINS);
 let kToverM    = 0.5 * V0 * V0;
 
@@ -560,26 +672,38 @@ let lastTime  = performance.now();
 let fpsAcc = 0, fpsCount = 0;
 let frameIdx = 0;
 
-function recordVVStep(encoder) {
-  // Pass 1: kick-drift src -> dst.
+function recordStep(encoder) {
+  // Pass 1: drift + walls, src -> dst.
   {
     const p1 = encoder.beginComputePass();
     p1.setPipeline(pipeline1);
-    p1.setBindGroup(0, latestIsA ? p1BindAB : p1BindBA);
+    p1.setBindGroup(0, latestIsA ? driftAB : driftBA);
     p1.dispatchWorkgroups(Math.ceil(N / WORKGROUP_SIZE));
     p1.end();
   }
-  // After pass 1, the freshly-written buffer is the "other" one; flip.
   latestIsA = !latestIsA;
 
-  // Pass 2: force + final kick, operating on the latest buffer in place.
+  // Pass 2a: every particle picks its single most-urgent overlapping
+  // approaching partner (or -1) and stores the index in partnerBuffer.
+  {
+    const pa = encoder.beginComputePass();
+    pa.setPipeline(pipelinePartner);
+    pa.setBindGroup(0, latestIsA ? partnerBindA : partnerBindB);
+    pa.dispatchWorkgroups(Math.ceil(N / WORKGROUP_SIZE));
+    pa.end();
+  }
+
+  // Pass 2b: apply the elastic impulse to pairs (i, j) that mutually chose
+  // each other. Ping-pongs the particle buffer back so the caller's
+  // latestIsA semantics are unchanged.
   {
     const p2 = encoder.beginComputePass();
     p2.setPipeline(pipeline2);
-    p2.setBindGroup(0, latestIsA ? p2BindA : p2BindB);
+    p2.setBindGroup(0, latestIsA ? collideAB : collideBA);
     p2.dispatchWorkgroups(Math.ceil(N / WORKGROUP_SIZE));
     p2.end();
   }
+  latestIsA = !latestIsA;
 }
 
 function recordRender(encoder) {
@@ -609,7 +733,7 @@ function loop() {
 
   const encoder = device.createCommandEncoder();
   if (!paused) {
-    for (let s = 0; s < substeps; s++) recordVVStep(encoder);
+    for (let s = 0; s < substeps; s++) recordStep(encoder);
   }
   recordRender(encoder);
   device.queue.submit([encoder.finish()]);
@@ -631,7 +755,7 @@ pauseBtn.addEventListener('click', () => {
   pauseBtn.textContent = paused ? 'Resume' : 'Pause';
 });
 resetBtn.addEventListener('click', () => {
-  uploadInitial();           // also zeros accBuffer
+  uploadInitial();
   latestIsA  = true;
   histCounts = new Float32Array(NUM_BINS);
   kToverM    = 0.5 * V0 * V0;
