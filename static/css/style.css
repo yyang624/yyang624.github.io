@@ -26,3 +26,9 @@ h2 { font-size: 1.2rem; margin-top: 1.5rem; }
 footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ddd;
          font-size: 0.85rem; color: var(--muted); font-family: var(--sans); }
 footer a { color: var(--muted); }
+
+
+.tags { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0 1.5rem; padding: 0;}
+.tags a {display: inline-block; padding: 0.2rem 0.7rem; background: #eef2f7; color: #334155;
+         border-radius: 999px; font-size: 0.85rem; text-decoration: none; transition: background 0.15s ease;}
+.tags a:hover {background: #dbe3ee;}
