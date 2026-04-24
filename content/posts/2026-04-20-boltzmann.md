@@ -34,7 +34,7 @@ Consider an isolated system with fixed total energy $E_t$ partitioned into subsy
 $$\Omega_{t}(E_{t})=\Omega_A(E_A)\Omega_B(E_B),\qquad E_B=E_t-E_A.$$
 By the equal-a-priori-probability postulate, the system is most likely found in the configuration that maximizes $\Omega_t$, so
 $$\frac{d\Omega_t}{dE_A}=\frac{d\Omega_A(E_A)}{dE_A}\Omega_B(E_B)+\Omega_A(E_A)\frac{d\Omega_B(E_B)}{dE_A}=0.$$
-Using $dE_B/dE_A=-1$,
+Using $dE_B/dE_A=d(E_t-E_A)/dE_A=-1$,
 $$\frac{d\Omega_B(E_B)}{dE_A}=\frac{d\Omega_B(E_B)}{dE_B}\frac{dE_B}{dE_A}=-\frac{d\Omega_B(E_B)}{dE_B},$$
 so the extremum condition becomes
 $$\frac{1}{\Omega_A}\frac{d\Omega_A}{dE_A}=\frac{1}{\Omega_B}\frac{d\Omega_B}{dE_B}.$$
